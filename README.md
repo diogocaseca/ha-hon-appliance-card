@@ -214,7 +214,7 @@ It uses these LocalThings entities: Machine state, Progress (the phase), Progres
 - **The programmes card works**, because LocalThings lists the machine's own cycles. With no `favourites` it shows every cycle as a button. To show only some, set `favourites` to the cycle values from the Cycle entity's list (under **Developer tools → States**); the rest go behind "All programmes". Tapping one sets the cycle and presses Start, using that cycle's default temperature, spin and options.
 - **Smart Control** (Remote Control) must be on at the machine. LocalThings refuses commands without it, and the card hides its buttons.
 - **Off** shows only when LocalThings gives the machine a power switch. Some only report power, read-only.
-- No door sensor or cycle count.
+- No door sensor or cycle count. The door icon shows locked while a cycle runs, and unlocked when it's paused or finished.
 
 ## Support and requests
 

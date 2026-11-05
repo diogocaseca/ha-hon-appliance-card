@@ -750,7 +750,8 @@ class HonApplianceCard extends HTMLElement {
     rows.push([T("Ends"), on && !isNaN(end) ? hhmm(new Date(end), this._lang) : "—"]);
     return { powered, on, done, cool, paused: machine === "pause", phase, pill, start, end,
       pct: on && progress > 0 ? progress : null, rows,
-      canOff: !!lt.power_switch?.startsWith("switch."), canStart: powered && !on && !done && !!lt.start, door: null };
+      canOff: !!lt.power_switch?.startsWith("switch."), canStart: powered && !on && !done && !!lt.start, door: null,
+      locked: machine === "active" };   // no door sensor: locked while it runs, unlocked when paused or finished
   }
 
   _render() {
@@ -781,8 +782,9 @@ class HonApplianceCard extends HTMLElement {
     const door = r.getElementById("door"), doorSensor = s.door;
     if (!doorSensor) {
       // no door sensor (most washers): the door is locked while a cycle is under way
-      door.querySelector("ha-icon").setAttribute("icon", on ? "mdi:lock" : "mdi:lock-open-variant");
-      door.classList.toggle("lit", on); door.title = this._tr(on ? "Door locked (cycle running)" : "Door unlocked");
+      const locked = s.locked ?? on;
+      door.querySelector("ha-icon").setAttribute("icon", locked ? "mdi:lock" : "mdi:lock-open-variant");
+      door.classList.toggle("lit", locked); door.title = this._tr(locked ? "Door locked (cycle running)" : "Door unlocked");
     } else {
       const open = doorSensor.state === "on";
       door.querySelector("ha-icon").setAttribute("icon", open ? "mdi:door-open" : on ? "mdi:lock" : "mdi:door-closed");
