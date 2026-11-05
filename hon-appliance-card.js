@@ -10,13 +10,17 @@
 //
 // Samsung washers and dryers work too, through Home Assistant's SmartThings integration: add  integration: smartthings
 // (status, phase, time left, progress ring, Pause / Resume / Stop / Start / Off; the programmes card is hOn only).
+// Or, without the cloud, through LocalThings (github.com/mbillow/localthings): add  integration: localthings
+// (everything above, plus the programmes card, which lists the machine's own cycles).
 //
 // Options (both cards):
 //   appliance: washer | dryer             required
-//   integration: hon | smartthings        default hon
+//   integration: hon | smartthings | localthings   default hon
 //   entity: washing_machine               the start of your entity IDs (binary_sensor.<entity>_status, sensor.<entity>_mode, ...)
 //                                         defaults: washing_machine for the washer, tumble_dryer for the dryer
 //                                         (smartthings: washer / dryer, i.e. sensor.<entity>_machine_state, select.<entity>, ...)
+//                                         (localthings: optional, any of the machine's entity IDs or the start of one)
+//   device: Washer                        localthings only, optional: the device's name or id in Home Assistant
 //   name: Washer                          card title
 //   colour: "#4fb3ff"                     accent colour
 //   language: de                          en, de, fr, it, es, nl, pl or pt (default: Home Assistant's language, else English)
@@ -341,14 +345,63 @@ const ST = {
            weight_sensing: "Weighing", delay_wash: "Scheduled", wrinkle_prevent: "Anti-crease", refreshing: "Refresh",
            sanitizing: "Sanitising", internal_care: "Self clean", freeze_protection: "Freeze guard", finish: "Finished", finished: "Finished", none: "" },
 };
-const INTEGRATIONS = { hon: "hon", smartthings: "smartthings", samsung: "smartthings" };
+// Samsung via LocalThings (github.com/mbillow/localthings), local control without the cloud. Its entity IDs follow
+// Home Assistant's language ("Machine state", "Estado da máquina" ...), so the card finds them by device and
+// translation_key instead of by name:
+//   sensor   machine_state idle | active | pause      progress  the phase (wash, rinse, spin, drying, cooling, finish ...)
+//            progress_percentage 0-100                finish_time timestamp      completion_minutes  minutes left
+//   binary_sensor remote_control                      switch (or binary_sensor) power_switch
+//   button   start (also resumes), pause, stop        select  washer_cycle_* / dryer_cycle_* / cycle: the programmes
+//   select   wash_temperature, spin_speed (washers), dryer_dry_level / washer_dry_level (dry level or dry time)
+const LT_KEYS = { machine_state: ["sensor"], progress: ["sensor"], progress_percentage: ["sensor"], finish_time: ["sensor"],
+  completion_minutes: ["sensor"], remote_control: ["binary_sensor"], power_switch: ["switch", "binary_sensor"],
+  start: ["button"], pause: ["button"], stop: ["button"], wash_temperature: ["select"], spin_speed: ["select"],
+  dry_level: ["select"], cycle: ["select"] };
+const LT_PHASE = { wash: "Washing", rinse: "Rinse", spin: "Spin", drying: "Drying", dryingwithdooropen: "Drying", cooling: "Cooldown",
+  weightsensing: "Weighing", delaywash: "Scheduled", prewash: "Pre-wash", steaming: "Steam", airwashing: "Air wash",
+  sanitizing: "Sanitising", finish: "Finished", idle: "", none: "" };
+// translation_key -> entity_id for the LocalThings washer or dryer this card is for, or null if there isn't one.
+// Picks the device by  device: (its id or name), else by  entity: (an entity ID or the start of one), else the first
+// LocalThings device of the right kind (a washer has a washer cycle or wash temperature; a dryer a dryer cycle or dry level).
+function ltEntities(h, c) {
+  const devs = {}, kind = {};
+  for (const e of Object.values(h?.entities || {})) {
+    if (e.platform !== "localthings" || !e.device_id) continue;
+    const dom = e.entity_id.split(".")[0], raw = e.translation_key || "";
+    let k = raw;
+    if (/^(washer_|dryer_)?cycle(_|$)/.test(raw)) k = "cycle";   // washer_cycle_table_02, dryer_cycle_table_03, cycle
+    else if (/^(washer|dryer)_dry_level$/.test(raw)) k = "dry_level";
+    if (/^washer_cycle|^wash_temperature$|^spin_speed$/.test(raw)) kind[e.device_id] = "washer";
+    else if (/^dryer_cycle|^dryer_dry_level$/.test(raw) && kind[e.device_id] !== "washer") kind[e.device_id] = "dryer";
+    const d = devs[e.device_id] ??= { _all: [] };
+    d._all.push(e.entity_id);
+    // a switch beats a read-only binary_sensor for power
+    if (LT_KEYS[k]?.includes(dom) && (!d[k] || (k === "power_switch" && dom === "switch"))) d[k] = e.entity_id;
+  }
+  const ids = Object.keys(devs).sort();
+  let dev;
+  if (c.device) {
+    const want = String(c.device).toLowerCase();
+    dev = ids.find(id => id === c.device || [h.devices?.[id]?.name_by_user, h.devices?.[id]?.name].some(n => n && n.toLowerCase() === want));
+  } else if (c.entity) {
+    const want = String(c.entity).toLowerCase();
+    dev = ids.find(id => devs[id]._all.some(x => x === want || x.split(".")[1].startsWith(want)));
+  } else dev = ids.find(id => kind[id] === c.appliance);
+  return dev ? { ...devs[dev], device: dev } : null;
+}
+// a state in Home Assistant's words (the integration's own translations), else tidied up
+const fmtState = (h, s, v = s?.state) => {
+  try { if (s && h?.formatEntityState) { const f = h.formatEntityState(s, v); if (f) return f; } } catch (e) {}
+  return v == null ? "" : nice(v);
+};
+const INTEGRATIONS = { hon: "hon", smartthings: "smartthings", samsung: "smartthings", localthings: "localthings" };
 const nice = v => String(v).replace(/_/g, " ").replace(/^\w/, c => c.toUpperCase());
 const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 function setup(c) {
   if (!DEFAULTS[c.appliance]) throw new Error("appliance must be washer or dryer");
   const d = DEFAULTS[c.appliance], integration = INTEGRATIONS[String(c.integration || "hon").toLowerCase()];
-  if (!integration) throw new Error("integration must be hon or smartthings");
-  const entity = c.entity || (integration === "smartthings" ? c.appliance : d.entity);
+  if (!integration) throw new Error("integration must be hon, smartthings or localthings");
+  const entity = c.entity || (integration === "smartthings" ? c.appliance : integration === "localthings" ? "" : d.entity);
   return { ...c, integration, entity, title: c.name || d.title, ownTitle: !!c.name, colour: c.colour || d.colour,
     style: c.style === "drawn" ? "drawn" : "photo", images: c.images ? c.images.replace(/\/?$/, "/") : "",
     finish: FINISH_NAMES[String(c.finish || "").toLowerCase()] || "white",
@@ -470,6 +523,14 @@ class HonApplianceCard extends HTMLElement {
     this._render();
   }
   _tr(key, ...a) { return tr(this._lang, key, ...a); }
+  // LocalThings: this machine's entities by translation_key, worked out again only when the entity registry changes
+  _ltMap() {
+    const h = this._hass;
+    if (this._ltSrc !== h?.entities || this._ltDevs !== h?.devices || this._ltCfg !== this._config) {
+      this._ltSrc = h?.entities; this._ltDevs = h?.devices; this._ltCfg = this._config; this._lt = ltEntities(h, this._config);
+    }
+    return this._lt;
+  }
   // the card name: your own, else "Washer"/"Dryer" in the card's language
   _title() { return this._config.ownTitle ? this._config.title : this._tr(this._config.title); }
 
@@ -484,7 +545,7 @@ class HonApplianceCard extends HTMLElement {
         <button id="start" hidden><ha-icon icon="mdi:play"></ha-icon>${T("Start")}</button>
         <button id="pause"><ha-icon icon="mdi:pause"></ha-icon>${T("Pause")}</button>
         <button id="resume"><ha-icon icon="mdi:play"></ha-icon>${T("Resume")}</button>
-        <button id="standby"><ha-icon icon="mdi:stop"></ha-icon>${T(c.integration === "smartthings" ? "Stop" : "Standby")}</button>
+        <button id="standby"><ha-icon icon="mdi:stop"></ha-icon>${T(c.integration === "hon" ? "Standby" : "Stop")}</button>
         <button id="off"><ha-icon icon="mdi:power"></ha-icon>${T("off_btn")}</button>
       </div>
       <div class="ask" id="ask" hidden><span id="askT"></span><button id="askNo">${T("Cancel")}</button><button class="go" id="askYes">${T("Yes")}</button></div>
@@ -521,17 +582,30 @@ class HonApplianceCard extends HTMLElement {
       { detail: { entityId: this._mainId() }, bubbles: true, composed: true })));
   }
 
-  _mainId() { const c = this._config; return c.integration === "smartthings" ? `sensor.${c.entity}_machine_state` : `binary_sensor.${c.entity}_status`; }
+  _mainId() {
+    const c = this._config;
+    if (c.integration === "localthings") return this._ltMap()?.machine_state;
+    return c.integration === "smartthings" ? `sensor.${c.entity}_machine_state` : `binary_sensor.${c.entity}_status`;
+  }
+  _remoteId() { return this._config.integration === "localthings" ? this._ltMap()?.remote_control : `binary_sensor.${this._config.entity}_remote_control`; }
   _ask(what) {
     const r = this.shadowRoot, name = this._title(); this._asking = what;
     r.getElementById("ask").hidden = !what;
     if (what) r.getElementById("askT").textContent = what === "off" ? this._tr("ask_off", name, !!this._t?.on)
-      : this._tr(this._config.integration === "smartthings" ? "ask_stop" : "ask_standby", name);
+      : this._tr(this._config.integration === "hon" ? "ask_standby" : "ask_stop", name);
   }
   async _send(action) {
     const r = this.shadowRoot, c = this._config, h = this._hass;
     r.getElementById("err").textContent = "";
     try {
+      if (c.integration === "localthings") {
+        // LocalThings has a button per command: start (also resumes a paused cycle), pause and stop; power is a switch
+        const lt = this._ltMap();
+        if (!lt) { r.getElementById("err").textContent = this._tr("no_device"); return; }
+        if (action === "off") await h.callService("switch", "turn_off", { entity_id: lt.power_switch });
+        else await h.callService("button", "press", { entity_id: lt[{ start: "start", resume: "start", pause: "pause", standby: "stop" }[action]] });
+        return;
+      }
       if (c.integration === "smartthings") {
         // the operating-state select (run / pause / stop) needs Remote Control; power is the device's switch
         if (action === "off") await h.callService("switch", "turn_off", { entity_id: `switch.${c.entity}` });
@@ -643,9 +717,46 @@ class HonApplianceCard extends HTMLElement {
       canOff: !!power, canStart: powered && !on && !done && !!this._st(`select.${dev}`), door: null };
   }
 
+  // Samsung via LocalThings: machine_state idle/active/pause, progress for the phase, completion_minutes for the time left
+  _readLT() {
+    const c = this._config, h = this._hass, washer = c.appliance === "washer", T = k => this._tr(k);
+    const lt = this._ltMap() || {}, st = k => this._st(lt[k]);
+    const machine = st("machine_state")?.state, job = st("progress")?.state, power = st("power_switch");
+    const on = machine === "active" || machine === "pause";
+    const powered = on || power?.state === "on";
+    const done = !on && job === "finish";
+    const cool = on && job === "cooling";
+    const phase = job == null ? "" : LT_PHASE[job] != null ? (LT_PHASE[job] && T(LT_PHASE[job])) : fmtState(h, st("progress"));
+    const pill = on ? (machine === "pause" ? T("Paused") : phase || T("Running")) : T(done ? "Finished" : powered ? "Ready" : "Off");
+
+    // completion_minutes counts whole minutes, so count down from when it last changed; finish_time is the fallback
+    const rem = st("completion_minutes");
+    let end = NaN;
+    if (rem && (on || powered) && parseFloat(rem.state) > 0) {
+      const key = rem.last_updated + rem.state;
+      if (this._remKey !== key) { this._remKey = key; this._remEnd = Date.parse(rem.last_updated) + parseFloat(rem.state) * 60000; }
+      end = on ? this._remEnd : Date.now() + parseFloat(rem.state) * 60000;   // idle: the selected programme's length
+    }
+    if (isNaN(end) && on) end = Date.parse(st("finish_time")?.state || "");
+    const progress = parseFloat(st("progress_percentage")?.state);
+    const start = on ? Date.parse(st("machine_state")?.last_changed || "") : NaN;
+
+    const sel = k => { const s = st(k); return s ? fmtState(h, s) : null; };
+    const unit = (k, u) => { const v = st(k)?.state; return v == null || v === "none" ? "—" : /^\d+$/.test(v) ? `${v} ${u}` : sel(k); };
+    const cycle = st("cycle");
+    const rows = [[T("Programme"), cycle ? c.names[cycle.state] ?? c.names[sel("cycle")] ?? sel("cycle") : "—"]];
+    if (washer) rows.push([T("Temp · Spin"), `${unit("wash_temperature", "°C")} · ${unit("spin_speed", "rpm")}`]);
+    else rows.push([T("Dry level"), sel("dry_level") ?? "—"]);
+    rows.push([T("Ends"), on && !isNaN(end) ? hhmm(new Date(end), this._lang) : "—"]);
+    return { powered, on, done, cool, paused: machine === "pause", phase, pill, start, end,
+      pct: on && progress > 0 ? progress : null, rows,
+      canOff: !!lt.power_switch?.startsWith("switch."), canStart: powered && !on && !done && !!lt.start, door: null };
+  }
+
   _render() {
     const r = this.shadowRoot, h = this._hass; if (!r || !h) return;
-    const s = this._config.integration === "smartthings" ? this._readST() : this._readHon();
+    const i = this._config.integration;
+    const s = i === "localthings" ? this._readLT() : i === "smartthings" ? this._readST() : this._readHon();
     const { powered, on, done, cool } = s;
     const card = r.querySelector("ha-card");
     card.classList.toggle("on", on); card.classList.toggle("off", !on && !done);
@@ -657,7 +768,7 @@ class HonApplianceCard extends HTMLElement {
     r.getElementById("phase").textContent = done ? this._tr("Finished") : s.phase;
     this._t = { on, done, start: s.start, end: s.end, pct: s.pct, ready: powered && !on && !done };
 
-    const wifi = this._st(`binary_sensor.${this._config.entity}_remote_control`)?.state === "on";
+    const wifi = this._st(this._remoteId())?.state === "on";
     const paused = on && s.paused;
     r.getElementById("ctl").hidden = !powered || !wifi;   // the machine ignores remote commands unless Remote Control is on
     r.getElementById("start").hidden = !s.canStart;
@@ -730,25 +841,51 @@ ha-card { display:block; background:var(--hon-card-bg,#2a2a2a); border:1px solid
 `;
 class HonProgrammesCard extends HTMLElement {
   setConfig(c) {
-    this._config = setup(c);
-    if (this.isConnected && !this.shadowRoot) this._build();
+    this._config = setup(c); this._ltOpts = null;
+    if (this.isConnected && (!this.shadowRoot || this._hass)) this._build();
   }
   getCardSize() { return 6; }
   connectedCallback() { if (!this.shadowRoot && this._config) this._build(); }
   set hass(h) {
     this._hass = h;
-    if (this.shadowRoot && pickLang(this._config, h) !== this._lang) this._build();   // Home Assistant's language arrives with hass
+    if (this.shadowRoot && (pickLang(this._config, h) !== this._lang || this._ltChanged())) this._build();   // Home Assistant's language arrives with hass
     this._render();
   }
+  // LocalThings: the programme list is the cycle select's options, so rebuild when the machine reports a different list
+  _ltOptions() {
+    const s = this._config.integration === "localthings" && this._hass?.states[this._ltMap()?.cycle];
+    return s?.attributes?.options || [];
+  }
+  _ltChanged() { return this._config.integration === "localthings" && this._ltOptions().join("|") !== this._ltOpts; }
+  // a programme's name: yours, else the integration's (LocalThings translates its cycle codes), else made from the hOn key
+  _label(k) {
+    const c = this._config;
+    if (c.integration !== "localthings") return label(k, c.names, this._lang);
+    const s = this._hass?.states[this._ltMap()?.cycle], shown = s ? fmtState(this._hass, s, k) : k;
+    return c.names[k] ?? c.names[shown] ?? shown;
+  }
   _tr(key, ...a) { return tr(this._lang, key, ...a); }
+  // LocalThings: this machine's entities by translation_key, worked out again only when the entity registry changes
+  _ltMap() {
+    const h = this._hass;
+    if (this._ltSrc !== h?.entities || this._ltDevs !== h?.devices || this._ltCfg !== this._config) {
+      this._ltSrc = h?.entities; this._ltDevs = h?.devices; this._ltCfg = this._config; this._lt = ltEntities(h, this._config);
+    }
+    return this._lt;
+  }
   _title() { return this._config.ownTitle ? this._config.title : this._tr(this._config.title); }
 
   _build() {
-    const c = this._config, all = c.programmes || [], lang = this._lang = pickLang(c, this._hass), T = k => esc(this._tr(k));
-    const favs = c.favourites || DEFAULTS[c.appliance].favourites, title = this._title();
-    const btn = k => `<button class="prog" data-k="${esc(k)}">${esc(label(k, c.names, lang))}</button>`;
+    const c = this._config, lang = this._lang = pickLang(c, this._hass), T = k => esc(this._tr(k)), lt = c.integration === "localthings";
+    // LocalThings: every cycle the machine offers; as buttons, or behind "All programmes" when you pick favourites
+    const opts = lt ? this._ltOptions() : [];
+    if (lt) this._ltOpts = opts.join("|");
+    const all = lt ? (c.favourites ? opts : []) : c.programmes || [];
+    const favs = lt ? (c.favourites ? c.favourites.map(String).filter(k => opts.includes(k) || !opts.length) : opts)
+      : c.favourites || DEFAULTS[c.appliance].favourites, title = this._title();
+    const btn = k => `<button class="prog" data-k="${esc(k)}">${esc(this._label(k))}</button>`;
     const r = this.shadowRoot || this.attachShadow({ mode: "open" });
-    if (c.integration !== "hon") {
+    if (c.integration === "smartthings") {
       // SmartThings doesn't give Home Assistant the cycle list, so there's nothing to pick from here
       r.innerHTML = `<style>${PCSS}</style><ha-card style="--c:${esc(c.colour)}">
         <div class="head"><span>${esc(this._tr("progs_title", title))}</span></div>
@@ -760,7 +897,7 @@ class HonProgrammesCard extends HTMLElement {
       <div class="note" id="note" hidden></div>
       <div class="grid" id="favs">${favs.map(btn).join("")}</div>
       <div class="all" id="all" hidden><input id="q" type="search" placeholder="${esc(this._tr("search", all.length))}">
-        <div class="grid" id="list">${[...all].sort((x, y) => label(x, c.names, lang).localeCompare(label(y, c.names, lang))).map(btn).join("")}</div></div>
+        <div class="grid" id="list">${[...all].sort((x, y) => this._label(x).localeCompare(this._label(y))).map(btn).join("")}</div></div>
       <div class="confirm" id="confirm" hidden><span id="ask"></span>
         <button class="small" id="no">${T("Cancel")}</button><button class="small go" id="yes">${T("Start")}</button></div>
     </ha-card>`;
@@ -786,13 +923,23 @@ class HonProgrammesCard extends HTMLElement {
     this._sel = k;
     r.querySelectorAll(".prog").forEach(b => b.classList.toggle("sel", b.dataset.k === k));
     r.getElementById("confirm").hidden = !k;
-    if (k) r.getElementById("ask").textContent = this._tr("start_q", label(k, this._config.names, this._lang), this._title());
+    if (k) r.getElementById("ask").textContent = this._tr("start_q", this._label(k), this._title());
   }
   async _start() {
     const k = this._sel, c = this._config, dev = this._hass?.entities?.[`binary_sensor.${c.entity}_status`]?.device_id;
     this._pick(null);
     if (!k) return;
     const n = this.shadowRoot.getElementById("note");
+    if (c.integration === "localthings") {
+      // pick the cycle, then press Start; the machine uses that cycle's own default temperature, spin and options
+      const lt = this._ltMap();
+      if (!lt?.cycle || !lt.start) { n.hidden = false; n.textContent = this._tr("no_device"); this._err = true; return; }
+      try {
+        await this._hass.callService("select", "select_option", { entity_id: lt.cycle, option: k });
+        await this._hass.callService("button", "press", { entity_id: lt.start });
+      } catch (e) { n.hidden = false; n.textContent = this._tr("start_err", e.message || e); this._err = true; }
+      return;
+    }
     if (!dev) { n.hidden = false; n.textContent = this._tr("no_device"); this._err = true; return; }
     try {
       await this._hass.callService("hon", "start_program", { program: k }, { device_id: dev });
@@ -801,9 +948,10 @@ class HonProgrammesCard extends HTMLElement {
   }
   _render() {
     const r = this.shadowRoot, h = this._hass; if (!r || !h || !r.getElementById("note")) return;
-    const dev = this._config.entity, running = h.states[`binary_sensor.${dev}_status`]?.state === "on"
-      && RUNNING_MODES.includes(h.states[`sensor.${dev}_mode`]?.state);
-    this._remote = h.states[`binary_sensor.${dev}_remote_control`]?.state === "on";
+    const dev = this._config.entity, lt = this._config.integration === "localthings" ? this._ltMap() || {} : null;
+    const running = lt ? ["active", "pause"].includes(h.states[lt.machine_state]?.state)
+      : h.states[`binary_sensor.${dev}_status`]?.state === "on" && RUNNING_MODES.includes(h.states[`sensor.${dev}_mode`]?.state);
+    this._remote = h.states[lt ? lt.remote_control : `binary_sensor.${dev}_remote_control`]?.state === "on";
     this._running = running;
     const n = r.getElementById("note"), name = this._title();
     if (!this._err || running) {

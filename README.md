@@ -1,6 +1,6 @@
 # hOn Washer & Dryer Card for Home Assistant
 
-Dashboard cards for washing machines and tumble dryers in the **hOn** app (**Haier, Candy, Hoover**), and for **Samsung** machines through SmartThings ([see below](#samsung-smartthings)). The machine looks like the real thing: the time left on its own display, a progress ring round the door, laundry spinning in the drum, and buttons to pause it or start a programme without walking to the utility room.
+Dashboard cards for washing machines and tumble dryers in the **hOn** app (**Haier, Candy, Hoover**), and for **Samsung** machines through SmartThings or LocalThings ([see below](#samsung-smartthings)). The machine looks like the real thing: the time left on its own display, a progress ring round the door, laundry spinning in the drum, and buttons to pause it or start a programme without walking to the utility room.
 
 **📖 [Step-by-step guide and live demo](https://mymediabuild.uk/home-assistant-washer-dryer-card/)** · **☕ [Buy me a coffee](https://buymeacoffee.com/bobgreggr)**
 
@@ -85,8 +85,9 @@ entity: hoover_washer
 | Option | Card | What it does |
 |---|---|---|
 | `appliance` | both | `washer` or `dryer` (required) |
-| `integration` | both | `hon` (default) or `smartthings` for Samsung machines |
-| `entity` | both | Start of your entity IDs. Default `washing_machine` / `tumble_dryer` (SmartThings: `washer` / `dryer`) |
+| `integration` | both | `hon` (default), or `smartthings` or `localthings` for Samsung machines |
+| `entity` | both | Start of your entity IDs. Default `washing_machine` / `tumble_dryer` (SmartThings: `washer` / `dryer`; LocalThings: found automatically) |
+| `device` | both | LocalThings only: the machine's device name or id, if you have more than one washer or dryer |
 | `name` | both | Card title. Default Washer / Dryer |
 | `colour` | both | Accent colour, e.g. `"#4fb3ff"` |
 | `max_width` | appliance | How wide the machine can get, e.g. `380px` |
@@ -190,6 +191,31 @@ What's different from hOn:
 - **Stop** cancels the cycle (like Standby on hOn). **Off** appears if the machine has a power switch entity.
 - No programme name, dry level or cycle count, because the integration doesn't expose them.
 
+### Samsung (LocalThings)
+
+[LocalThings](https://github.com/mbillow/localthings) talks to Samsung washers and dryers on your home network, with no cloud account. Add `integration: localthings` to both cards:
+
+```yaml
+type: custom:hon-appliance-card
+appliance: washer
+integration: localthings
+```
+
+```yaml
+type: custom:hon-programmes-card
+appliance: washer
+integration: localthings
+```
+
+The card finds the machine on its own: the first LocalThings device with a washer cycle (or wash temperature) for `appliance: washer`, and with a dryer cycle (or dry level) for `appliance: dryer`. It looks entities up by what they are, not by name, so it works whatever language Home Assistant named them in. With more than one washer or dryer, pick one with `device: <its name in Home Assistant>`, or `entity:` with one of its entity IDs or the start of one.
+
+It uses these LocalThings entities: Machine state, Progress (the phase), Progress percent, Completion time and Estimated finish, Smart Control, Power, the Start, Pause and Stop buttons, Cycle, Wash temperature and Spin speed (washers) or Dry level (dryers).
+
+- **The programmes card works**, because LocalThings lists the machine's own cycles. With no `favourites` it shows every cycle as a button. To show only some, set `favourites` to the cycle values from the Cycle entity's list (under **Developer tools → States**); the rest go behind "All programmes". Tapping one sets the cycle and presses Start, using that cycle's default temperature, spin and options.
+- **Smart Control** (Remote Control) must be on at the machine. LocalThings refuses commands without it, and the card hides its buttons.
+- **Off** shows only when LocalThings gives the machine a power switch. Some only report power, read-only.
+- No door sensor or cycle count.
+
 ## Support and requests
 
 I build and look after this card in my spare time.
@@ -207,4 +233,4 @@ More free Home Assistant cards and guides at [mymediabuild.uk](https://mymediabu
 
 ## Licence
 
-MIT. Not affiliated with or endorsed by Haier, Candy, Hoover or Samsung.
+MIT. Not affiliated with or endorsed by Haier, Candy, Hoover, Samsung or the LocalThings project.
